@@ -558,6 +558,9 @@ const AUDIO_SRC = "data:audio/mpeg;base64,SUQzBAAAAAABAFRYWFgAAAASAAADbWFqb3JfYn
 const audioEl = new Audio(AUDIO_SRC);
 audioEl.loop = true;
 audioEl.volume = 0.8;
+// Required for iOS: must be set before play()
+audioEl.setAttribute('playsinline', '');
+audioEl.setAttribute('webkit-playsinline', '');
 
 let audioCtx, analyser, freqData, audioStarted = false;
 const nowPlaying = document.getElementById('now-playing');
@@ -565,8 +568,13 @@ const nowPlayingLabel = nowPlaying.querySelector('span');
 const eqBars = nowPlaying.querySelectorAll('.eq i');
 
 function startAudio(){
+  // If already playing, just resume a suspended context (e.g. after tab switch)
+  if(audioCtx && audioCtx.state === 'suspended'){
+    audioCtx.resume();
+  }
   if(audioStarted) return;
   audioStarted = true;
+
   try{
     audioCtx = new (window.AudioContext||window.webkitAudioContext)();
     const src = audioCtx.createMediaElementSource(audioEl);
@@ -576,18 +584,43 @@ function startAudio(){
     analyser.connect(audioCtx.destination);
     freqData = new Uint8Array(analyser.frequencyBinCount);
   }catch(e){ /* analyser optional; playback still works without it */ }
-  audioEl.play().then(()=>{
-    nowPlayingLabel.textContent = 'NOW PLAYING';
-  }).catch(()=>{
-    nowPlayingLabel.textContent = 'TAP TO PLAY';
-    audioStarted = false; // allow retry on next gesture
-  });
+
+  // Resume context first (critical for iOS Safari)
+  const tryPlay = () => {
+    const playPromise = audioEl.play();
+    if(playPromise !== undefined){
+      playPromise.then(()=>{
+        nowPlayingLabel.textContent = 'NOW PLAYING';
+      }).catch(()=>{
+        // Autoplay blocked — reset so next gesture retries
+        audioStarted = false;
+        nowPlayingLabel.textContent = 'TAP TO PLAY';
+      });
+    }
+  };
+
+  if(audioCtx && audioCtx.state === 'suspended'){
+    audioCtx.resume().then(tryPlay).catch(tryPlay);
+  } else {
+    tryPlay();
+  }
+
   nowPlaying.classList.add('show');
 }
-window.addEventListener('scroll', startAudio, {once:true, passive:true});
-window.addEventListener('pointerdown', startAudio, {once:true});
+
+// Scroll doesn't count as a user gesture on iOS — only touch/click/key does
+// So we keep scroll as a best-effort for desktop, but rely on touch for mobile
+window.addEventListener('scroll', startAudio, {passive:true});
+window.addEventListener('pointerdown', startAudio);
+window.addEventListener('touchstart', startAudio, {passive:true});
+window.addEventListener('keydown', startAudio);
+
 nowPlaying.classList.add('show');
 nowPlaying.addEventListener('click', startAudio);
+nowPlaying.addEventListener('touchend', function(e){
+  e.preventDefault(); // prevent ghost click delay on mobile
+  startAudio();
+});
 
 /* ============================================================
    THREE.JS — audio-reactive bar field, now also visible
